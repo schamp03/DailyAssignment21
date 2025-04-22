@@ -1,0 +1,147 @@
+---
+title: "DailyAssignment22"
+format: html
+editor: visual
+execute:
+  echo: true
+  message: false
+  warning: false
+  output: true
+  cache: true
+self-contained: true
+---
+
+```{r}
+# Data Download
+library(dataRetrieval)
+library(dplyr)
+library(lubridate)
+library(tsibble)
+
+# Download historical streamflow from USGS
+site <- "06752260"  # Cache la Poudre River at Fort Collins, CO
+parameter <- "00060"  # Discharge (streamflow)
+start_date <- "2010-01-01"
+end_date <- "2023-12-31"
+
+poudre_data <- readNWISdv(site, parameter, start_date, end_date) %>%
+  rename(date = Date, streamflow = X_00060_00003) %>%
+  select(date, streamflow) %>%
+  mutate(date = as.Date(date)) %>%
+  filter(!is.na(streamflow)) %>%
+  mutate(month = floor_date(date, "month")) %>%
+  group_by(month) %>%
+  summarise(streamflow = mean(streamflow)) %>%
+  ungroup()
+
+
+```
+
+```{r}
+library(tidymodels)
+
+split <- initial_time_split(poudre_data, prop = 0.9)
+training_data <- training(split)
+
+glimpse(training_data)
+
+```
+
+
+```{r}
+# Train
+
+library(tidymodels)
+library(timetk)
+
+library(modeltime)
+library(prophet)
+
+model_prophet <- prophet_reg(seasonality_yearly = TRUE) %>%
+  set_engine("prophet") %>%
+  fit(streamflow ~ month, data = training_data)
+
+# Split data
+split <- initial_time_split(poudre_data, prop = 0.9)
+
+# Models
+model_prophet <- prophet_reg(seasonality_yearly = TRUE) %>%
+  set_engine("prophet") %>%
+  fit(streamflow ~ month, data = training(split))
+
+model_arima <- arima_reg() %>%
+  set_engine("auto_arima") %>%
+  fit(streamflow ~ month, data = training(split))
+
+# Combine models
+models_tbl <- modeltime_table(model_prophet, model_arima)
+
+# Calibrate and forecast
+calibration_tbl <- models_tbl %>%
+  modeltime_calibrate(new_data = testing(split))
+
+forecast_tbl <- models_tbl %>%
+  modeltime_forecast(
+    new_data = testing(split),
+    actual_data = poudre_data
+  )
+
+```
+
+
+```{r}
+future_tbl <- poudre_data %>%
+  future_frame(.date_var = month, .length_out = 12)
+
+future_forecast <- models_tbl %>%
+  modeltime_refit(poudre_data) %>%
+  modeltime_forecast(new_data = future_tbl, actual_data = poudre_data)
+
+```
+
+
+```{r}
+obs_2024 <- readNWISdv(site, parameter, "2024-01-01", "2024-12-31") %>%
+  rename(date = Date, streamflow = X_00060_00003) %>%
+  select(date, streamflow) %>%
+  mutate(date = as.Date(date),
+         month = floor_date(date, "month")) %>%
+  group_by(month) %>%
+  summarise(streamflow = mean(streamflow, na.rm = TRUE)) %>%
+  ungroup()
+
+```
+
+
+```{r}
+# Merge predicted and observed
+pred_vs_obs <- future_forecast %>%
+  filter(.model_desc == "PROPHET") %>%
+  select(month = .index, prediction = .value) %>%
+  inner_join(obs_2024, by = "month")
+
+# Compute R²
+r2_result <- lm(streamflow ~ prediction, data = pred_vs_obs) %>%
+  glance()
+
+r2_result$r.squared
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(pred_vs_obs, aes(x = prediction, y = streamflow)) +
+  geom_point(color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Predicted vs Observed Streamflow (2024)",
+    x = "Predicted Streamflow",
+    y = "Observed Streamflow"
+  ) +
+  theme_minimal()
+
+```
+
+# The model performed moderately well in predicting 2024 stream flow, achieving an R² of 0.625. The predicted vs. observed plot shows that while most predictions follow the general pattern, there is some scatter around the 1:1 line, indicating variability not captured by the model. The seasonal trend was effectively modeled, but unusual flow events or weather conditions may have reduced precision.

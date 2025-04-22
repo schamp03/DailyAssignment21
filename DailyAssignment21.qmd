@@ -1,0 +1,128 @@
+---
+title: "DailyAssignment21"
+format: html
+editor: visual
+execute:
+  echo: true
+  message: false
+  warning: false
+  output: true
+  cache: true
+self-contained: true
+---
+
+
+```{r}
+# Library
+library(tsibble)
+library(feasts)
+library(fable)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(readr)
+
+#Load dataset
+set.seed(123)
+my_data <- tibble(
+  date = seq(as.Date("2015-01-01"), as.Date("2020-12-31"), by = "month"),
+  streamflow = 100 + sin(2 * pi * 1:72 / 12) * 10 + rnorm(72, 0, 5)
+)
+```
+
+```{r}
+# Convert to tsibble 
+ts_data <- my_data %>%
+  as_tsibble(index = date)
+```
+
+```{r}
+# Plot Time Series
+p <- ggplot(ts_data, aes(x = date, y = streamflow)) +
+  geom_line(color = "darkblue") +
+  labs(title = "Monthly Streamflow Over Time", y = "Streamflow", x = "Date") +
+  theme_minimal()
+
+# Animate with Plotly
+ggplotly(p)
+
+```
+
+```{r}
+library(dplyr)
+library(tsibble)
+library(imputeTS)
+library(feasts)
+library(ggplot2)
+
+# Step 1: Rebuild tsibble and ensure time index is regular
+ts_data <- my_data %>%
+  as_tsibble(index = date) %>%
+  fill_gaps()                           # Fills any missing time stamps
+
+# Step 2: Interpolate missing values fully
+ts_data <- ts_data %>%
+  mutate(streamflow = na_interpolation(streamflow, option = "linear"))
+
+# Confirm all NAs are gone
+sum(is.na(ts_data$streamflow))   # MUST be 0
+
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(ts_data, aes(x = date, y = streamflow)) +
+  geom_line(color = "forestgreen") +
+  labs(title = "Streamflow Time Series", x = "Date", y = "Streamflow")
+
+
+```
+
+```{r}
+# Subseries Plot
+library(tsibble)
+library(dplyr)
+library(lubridate)
+library(feasts)
+
+
+my_data <- my_data %>%
+  mutate(date = as.Date(date))
+
+# Step 2: Create a tsibble
+ts_data <- my_data %>%
+  as_tsibble(index = date) %>%
+  fill_gaps()
+
+# Interpolate missing values
+library(imputeTS)
+ts_data$streamflow <- na_interpolation(ts_data$streamflow, option = "linear")
+
+# Aggregate to monthly streamflow
+ts_monthly <- ts_data %>%
+  mutate(month = yearmonth(date)) %>%   # This must come AFTER date is a Date
+  index_by(month) %>%
+  summarise(streamflow = mean(streamflow, na.rm = TRUE))
+
+gg_subseries(ts_monthly, streamflow) +
+  labs(title = "Monthly Subseries Plot of Streamflow",
+       y = "Streamflow", x = "Month") +
+  theme_minimal()
+
+```
+
+
+This sub-series plot shows streamflow values grouped by month (i.e., “seasons”). Peaks in certain months suggest consistent seasonal patterns. For instance, higher values in spring months may indicate snowmelt contributions to streamflow.
+
+```{r}
+# Decomposition
+decomp <- ts_data %>%
+  model(STL(streamflow ~ season(window = "periodic"))) %>%
+  components()
+
+autoplot(decomp) +
+  labs(title = "STL Decomposition of Streamflow")
+
+```
